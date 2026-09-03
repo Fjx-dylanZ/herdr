@@ -128,7 +128,7 @@ use terminal_sessions::terminal_control_command_from_json;
 #[cfg(unix)]
 use std::collections::HashMap;
 use std::io::{self, Write as _};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 #[cfg(unix)]
 use std::sync::Mutex;
@@ -198,6 +198,7 @@ fn run_client_with_mode(
     let mut loop_config = ClientLoopConfig {
         sound_config: loaded_config.config.ui.sound,
         mouse_scroll_lines,
+        escape_time_ms: loaded_config.config.ui.escape_time_ms,
         redraw_on_focus_gained,
         host_cursor,
         kitty_graphics_enabled,
@@ -499,6 +500,7 @@ async fn run_client_loop(
         }
     }
     let host_mouse_capture_active = Arc::new(AtomicBool::new(state.mouse_capture_active));
+    let escape_time_ms = Arc::new(AtomicU16::new(config.escape_time_ms));
     // Cell size reported by the host terminal, packed as width<<32 | height.
     // Zero means the host has not reported one.
     let reported_cell_size = Arc::new(AtomicU64::new(0));
@@ -526,6 +528,7 @@ async fn run_client_loop(
         && host_cell_size_query_required(state.kitty_graphics_enabled);
     let stdin_quit = should_quit.clone();
     let stdin_mouse_capture_active = host_mouse_capture_active.clone();
+    let stdin_escape_time_ms = escape_time_ms.clone();
     let stdin_sgr_pixels_active = host_sgr_pixels_active.clone();
     let stdin_escape_disambiguation_active = config.host_escape_disambiguation_active;
     let stdin_initial_host_input = std::mem::take(&mut config.initial_host_input);
@@ -544,6 +547,7 @@ async fn run_client_loop(
             stdin_host_theme_query_pending,
             will_query_host_cell_size,
             stdin_mouse_capture_active,
+            stdin_escape_time_ms,
             stdin_sgr_pixels_active,
             stdin_escape_disambiguation_active,
             stdin_initial_host_input,
@@ -1935,6 +1939,7 @@ async fn run_client_loop(
                         &mut pending_activation,
                         &host_mouse_capture_active,
                         &host_sgr_pixels_active,
+                        &escape_time_ms,
                         &mut prefix_input_source,
                     )?,
                     ServerMessage::MouseCapture {

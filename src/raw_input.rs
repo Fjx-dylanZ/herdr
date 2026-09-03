@@ -305,12 +305,13 @@ impl RawInputByteFramer {
     }
 
     /// How long to keep holding input after a first idle flush held it.
+    /// `escape_time_ms` caps keyboard holds; a disambiguated mouse tail keeps its window.
     #[cfg(unix)]
-    pub(crate) fn held_input_flush_timeout_ms(&self) -> i32 {
+    pub(crate) fn held_input_flush_timeout_ms(&self, escape_time_ms: u16) -> i32 {
         if self.awaiting_mouse_tail_after.is_some() {
             DISAMBIGUATED_MOUSE_TAIL_FLUSH_TIMEOUT_MS
         } else {
-            RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
+            i32::from(escape_time_ms).min(RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS)
         }
     }
 

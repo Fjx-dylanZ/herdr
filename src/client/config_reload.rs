@@ -10,6 +10,7 @@ pub(super) fn apply_reload(
     pending_activation: &mut Option<endpoint::PendingEndpointActivation>,
     host_mouse_capture_active: &std::sync::atomic::AtomicBool,
     host_sgr_pixels_active: &std::sync::atomic::AtomicBool,
+    escape_time_ms: &AtomicU16,
     prefix_input_source: &mut impl crate::platform::PrefixInputSource,
 ) -> Result<(), ClientError> {
     let previous_mouse_capture = state.shell_mouse_capture_preference;
@@ -20,6 +21,7 @@ pub(super) fn apply_reload(
         &mut state.draw_host_cursor,
         &mut state.remote_image_paste_key,
         &mut mouse_capture,
+        escape_time_ms,
     );
     state.shell_mouse_capture_preference = mouse_capture;
     state.direct_mouse_capture_preference = state.attach_escape.is_some() && mouse_capture;
@@ -98,6 +100,7 @@ pub(super) fn reload_local_client_config(
         crossterm::event::KeyModifiers,
     )>,
     mouse_capture: &mut bool,
+    escape_time_ms: &AtomicU16,
 ) {
     match crate::config::load_live_config() {
         Ok(loaded) => {
@@ -116,6 +119,7 @@ pub(super) fn reload_local_client_config(
                 *redraw_on_focus_gained = loaded.config.ui.redraw_on_focus_gained;
                 *draw_host_cursor = should_draw_host_cursor(loaded.config.ui.host_cursor);
                 *mouse_capture = loaded.config.ui.mouse_capture;
+                escape_time_ms.store(loaded.config.ui.escape_time_ms, Ordering::Release);
             }
             if !invalid_section("keys") {
                 *remote_image_paste_key = client_remote_image_paste_key(&loaded.config);

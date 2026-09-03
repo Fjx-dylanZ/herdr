@@ -276,6 +276,11 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Pane scrollback lines to scroll per mouse wheel notch.
 # mouse_scroll_lines = 3
 
+# Wait after a lone Escape byte to distinguish it from a split mouse report.
+# Set to 0 for immediate Escape handling. On slow or remote connections,
+# mouse reports split immediately after Escape may then be misread as keyboard input.
+# escape_time_ms = 150
+
 # Ask for confirmation before closing a workspace
 # confirm_close = true
 

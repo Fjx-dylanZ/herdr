@@ -5,8 +5,8 @@ use serde::{de, Deserialize, Deserializer, Serialize};
 
 use super::{
     ActionKeybinds, BindingConfig, CommandKeybindConfig, IndexedKeybind, Keybinds, SidebarConfig,
-    SoundConfig, TabBarRightEntryConfig, ThemeConfig, DEFAULT_MOBILE_WIDTH_THRESHOLD,
-    DEFAULT_MOUSE_SCROLL_LINES, DEFAULT_SCROLLBACK_LIMIT_BYTES,
+    SoundConfig, TabBarRightEntryConfig, ThemeConfig, DEFAULT_ESCAPE_TIME_MS,
+    DEFAULT_MOBILE_WIDTH_THRESHOLD, DEFAULT_MOUSE_SCROLL_LINES, DEFAULT_SCROLLBACK_LIMIT_BYTES,
 };
 
 pub const MAX_TOAST_DELAY_SECONDS: u64 = 3600;
@@ -960,6 +960,8 @@ pub struct UiConfig {
     pub redraw_on_focus_gained: bool,
     /// Lines to scroll per mouse wheel notch. Default: 3.
     pub mouse_scroll_lines: Option<NonZeroUsize>,
+    /// Wait after a lone Escape byte to distinguish split mouse input. Default: 150 ms.
+    pub escape_time_ms: u16,
     /// Ask for confirmation before closing a workspace. Default: true.
     pub confirm_close: bool,
     /// Ask for a tab name before creating a new tab. Default: true.
@@ -1207,6 +1209,7 @@ impl Default for UiConfig {
             right_click_passthrough_modifier: RightClickPassthroughModifierConfig::default(),
             redraw_on_focus_gained: true,
             mouse_scroll_lines: None,
+            escape_time_ms: DEFAULT_ESCAPE_TIME_MS,
             confirm_close: true,
             prompt_new_tab_name: true,
             prompt_new_workspace_name: false,
@@ -1854,6 +1857,19 @@ mouse_scroll_lines = 1
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.ui.mouse_scroll_lines(), 1);
+    }
+
+    #[test]
+    fn escape_time_ms_defaults_to_150_and_accepts_zero() {
+        let default_config = Config::default();
+        assert_eq!(default_config.ui.escape_time_ms, DEFAULT_ESCAPE_TIME_MS);
+
+        let toml = r#"
+[ui]
+escape_time_ms = 0
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.ui.escape_time_ms, 0);
     }
 
     #[test]

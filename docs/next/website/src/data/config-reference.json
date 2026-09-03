@@ -941,6 +941,12 @@
           "description": "Lines to scroll per mouse wheel notch."
         },
         {
+          "key": "ui.escape_time_ms",
+          "type": "integer",
+          "default": "150",
+          "description": "Milliseconds to wait after a lone Escape byte to distinguish it from a split mouse report. Set to 0 for immediate Escape handling; slow or remote connections may then misread mouse reports split immediately after Escape."
+        },
+        {
           "key": "ui.confirm_close",
           "type": "boolean",
           "default": "true",
