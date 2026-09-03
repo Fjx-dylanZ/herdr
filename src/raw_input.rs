@@ -40,8 +40,6 @@ use crate::terminal_theme::{
 const ESC: u8 = 0x1b;
 #[cfg(any(unix, test))]
 pub(crate) const RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS: i32 = 10;
-#[cfg(any(unix, test))]
-pub(crate) const MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS: i32 = 150;
 /// Covers the 33 ms split in #4630 without gluing legacy Alt+[ to the next key.
 #[cfg(any(unix, test))]
 pub(crate) const MOUSE_ACTIVE_CSI_INTRODUCER_FLUSH_TIMEOUT_MS: i32 = 50;
@@ -431,8 +429,13 @@ impl RawInputByteFramer {
     /// How long to wait for more input before `flush_timeout`. Only bytes that
     /// could still be a key get the short keyboard window; anything already
     /// inside a sequence waits long enough for split reads over slow links.
+    /// `escape_time_ms` is the lone-ESC window while the host captures the mouse.
     #[cfg(any(unix, test))]
-    pub(crate) fn idle_flush_timeout_ms(&self, host_mouse_capture_active: bool) -> i32 {
+    pub(crate) fn idle_flush_timeout_ms(
+        &self,
+        host_mouse_capture_active: bool,
+        escape_time_ms: u16,
+    ) -> i32 {
         if self.buffer.is_empty() {
             return RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS;
         }
@@ -445,7 +448,7 @@ impl RawInputByteFramer {
                 return RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS;
             }
             return match self.buffer.as_slice() {
-                [ESC] => MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS,
+                [ESC] => i32::from(escape_time_ms),
                 // A mouse report split after ESC[ is still ambiguous with legacy Alt+[.
                 b"\x1b[" => MOUSE_ACTIVE_CSI_INTRODUCER_FLUSH_TIMEOUT_MS,
                 _ => RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS,
@@ -458,12 +461,13 @@ impl RawInputByteFramer {
     }
 
     /// How long to keep holding input after a first idle flush held it.
+    /// `escape_time_ms` caps keyboard holds; a disambiguated mouse tail keeps its window.
     #[cfg(unix)]
-    pub(crate) fn held_input_flush_timeout_ms(&self) -> i32 {
+    pub(crate) fn held_input_flush_timeout_ms(&self, escape_time_ms: u16) -> i32 {
         if self.awaiting_mouse_tail_after.is_some() {
             DISAMBIGUATED_MOUSE_TAIL_FLUSH_TIMEOUT_MS
         } else {
-            RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
+            i32::from(escape_time_ms).min(RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS)
         }
     }
 
@@ -3065,7 +3069,7 @@ mod tests {
         let mut framer = RawInputByteFramer::with_host_input_policy(true);
         assert!(framer.push(b"\x1b\x1b").is_empty());
         assert_eq!(
-            framer.idle_flush_timeout_ms(false),
+            framer.idle_flush_timeout_ms(false, crate::config::DEFAULT_ESCAPE_TIME_MS),
             RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
         );
         let chunks = framer.flush_timeout();
@@ -3497,7 +3501,7 @@ mod tests {
 
         assert!(framer.push(b"\x1b[").is_empty());
         assert_eq!(
-            framer.idle_flush_timeout_ms(false),
+            framer.idle_flush_timeout_ms(false, crate::config::DEFAULT_ESCAPE_TIME_MS),
             RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
         );
         assert_eq!(framer.flush_timeout(), vec![b"\x1b[".to_vec()]);
@@ -3517,7 +3521,7 @@ mod tests {
         );
         assert!(framer.push(b"\x1b]").is_empty());
         assert_eq!(
-            framer.idle_flush_timeout_ms(false),
+            framer.idle_flush_timeout_ms(false, crate::config::DEFAULT_ESCAPE_TIME_MS),
             INCOMPLETE_SEQUENCE_FLUSH_TIMEOUT_MS
         );
     }

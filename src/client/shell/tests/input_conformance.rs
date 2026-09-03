@@ -1049,7 +1049,7 @@ fn framed_events_with(
         };
         let mut waited = 0;
         for _ in 0..3 {
-            let wait = framer.idle_flush_timeout_ms(true);
+            let wait = framer.idle_flush_timeout_ms(true, crate::config::DEFAULT_ESCAPE_TIME_MS);
             if !framer.has_pending_input() || waited + wait > pause_ms {
                 break;
             }

@@ -12,7 +12,7 @@
 
 #[cfg(unix)]
 use std::sync::atomic::Ordering;
-use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32};
 use std::sync::Arc;
 
 #[cfg(unix)]
@@ -35,6 +35,7 @@ pub(super) mod windows_vti;
 /// This runs on a dedicated thread because stdin reading is blocking.
 /// The main loop receives the raw bytes and forwards them as
 /// `ClientMessage::Input` to the server.
+#[allow(clippy::too_many_arguments)] // The reader thread takes one launch snapshot plus shared host-input state.
 pub fn stdin_reader_loop(
     event_tx: mpsc::Sender<ClientLoopEvent>,
     should_quit: &Arc<AtomicBool>,
@@ -42,6 +43,7 @@ pub fn stdin_reader_loop(
     host_theme_query_pending: Arc<AtomicU32>,
     host_cell_size_query_sent: bool,
     host_mouse_capture_active: Arc<AtomicBool>,
+    escape_time_ms: Arc<AtomicU16>,
     host_sgr_pixels_active: Arc<AtomicBool>,
     host_escape_disambiguation_active: bool,
     initial_host_input: Vec<u8>,
@@ -54,6 +56,7 @@ pub fn stdin_reader_loop(
             host_theme_query_pending,
             host_cell_size_query_sent,
             host_mouse_capture_active,
+            escape_time_ms,
             host_sgr_pixels_active,
         );
         let _ = (host_escape_disambiguation_active, initial_host_input);
@@ -68,6 +71,7 @@ pub fn stdin_reader_loop(
         host_theme_query_pending,
         host_cell_size_query_sent,
         host_mouse_capture_active,
+        escape_time_ms,
         host_sgr_pixels_active,
         host_escape_disambiguation_active,
         initial_host_input,
@@ -77,6 +81,7 @@ pub fn stdin_reader_loop(
 }
 
 #[cfg(unix)]
+#[allow(clippy::too_many_arguments)] // Mirrors `stdin_reader_loop`'s launch snapshot.
 fn unix_stdin_reader_loop(
     event_tx: mpsc::Sender<ClientLoopEvent>,
     should_quit: &Arc<AtomicBool>,
@@ -84,6 +89,7 @@ fn unix_stdin_reader_loop(
     host_theme_query_pending: Arc<AtomicU32>,
     host_cell_size_query_sent: bool,
     host_mouse_capture_active: Arc<AtomicBool>,
+    escape_time_ms: Arc<AtomicU16>,
     host_sgr_pixels_active: Arc<AtomicBool>,
     host_escape_disambiguation_active: bool,
     initial_host_input: Vec<u8>,
@@ -123,10 +129,14 @@ fn unix_stdin_reader_loop(
         ) {
             return;
         }
+        let configured_escape_time_ms = escape_time_ms.load(Ordering::Acquire);
         if (framer.has_pending_input() || !pending_palette.is_empty())
             && stdin_read_ready(
                 &reader,
-                framer.idle_flush_timeout_ms(host_mouse_capture_active.load(Ordering::Acquire)),
+                framer.idle_flush_timeout_ms(
+                    host_mouse_capture_active.load(Ordering::Acquire),
+                    configured_escape_time_ms,
+                ),
             ) == Some(false)
         {
             let had_pending = framer.has_pending_input();
@@ -143,7 +153,10 @@ fn unix_stdin_reader_loop(
                 return;
             }
             if held_escape
-                && stdin_read_ready(&reader, framer.held_input_flush_timeout_ms()) == Some(false)
+                && stdin_read_ready(
+                    &reader,
+                    framer.held_input_flush_timeout_ms(configured_escape_time_ms),
+                ) == Some(false)
                 && !send_unix_input_chunks(
                     framer.flush_timeout(),
                     &event_tx,
@@ -228,8 +241,11 @@ fn unix_stdin_reader_loop(
                     return;
                 }
 
-                let timeout_ms =
-                    framer.idle_flush_timeout_ms(host_mouse_capture_active.load(Ordering::Acquire));
+                let configured_escape_time_ms = escape_time_ms.load(Ordering::Acquire);
+                let timeout_ms = framer.idle_flush_timeout_ms(
+                    host_mouse_capture_active.load(Ordering::Acquire),
+                    configured_escape_time_ms,
+                );
                 if stdin_read_ready(&reader, timeout_ms) == Some(false) {
                     let had_pending = framer.has_pending_input();
                     let chunks = framer.flush_timeout();
@@ -250,8 +266,10 @@ fn unix_stdin_reader_loop(
                         return;
                     }
                     if held_escape
-                        && stdin_read_ready(&reader, framer.held_input_flush_timeout_ms())
-                            == Some(false)
+                        && stdin_read_ready(
+                            &reader,
+                            framer.held_input_flush_timeout_ms(configured_escape_time_ms),
+                        ) == Some(false)
                     {
                         let chunks = framer.flush_timeout();
                         if !framer.has_pending_input() {
@@ -596,8 +614,10 @@ mod tests {
         gap: std::time::Duration,
         next: &[u8],
     ) -> Vec<Vec<u8>> {
-        let first_wait =
-            std::time::Duration::from_millis(framer.idle_flush_timeout_ms(mouse_capture) as u64);
+        let first_wait = std::time::Duration::from_millis(
+            framer.idle_flush_timeout_ms(mouse_capture, crate::config::DEFAULT_ESCAPE_TIME_MS)
+                as u64,
+        );
         let mut chunks = Vec::new();
         if gap >= first_wait {
             chunks.extend(framer.flush_timeout());
@@ -605,7 +625,9 @@ mod tests {
                 && gap
                     >= first_wait
                         + std::time::Duration::from_millis(
-                            framer.held_input_flush_timeout_ms() as u64
+                            framer
+                                .held_input_flush_timeout_ms(crate::config::DEFAULT_ESCAPE_TIME_MS)
+                                as u64,
                         )
             {
                 chunks.extend(framer.flush_timeout());
@@ -850,7 +872,7 @@ mod tests {
     }
 
     #[test]
-    fn only_ambiguous_escape_prefixes_get_the_short_keyboard_window() {
+    fn mouse_active_escape_timeout_is_configurable_without_shortening_mouse_reassembly() {
         let mut escape = crate::raw_input::RawInputByteFramer::default();
         assert!(escape.push(b"\x1b").is_empty());
         let mut csi = crate::raw_input::RawInputByteFramer::default();
@@ -865,31 +887,51 @@ mod tests {
         // A lone ESC or ESC[ may still be a key (Escape, Alt+[).
         for framer in [&escape, &csi] {
             assert_eq!(
-                framer.idle_flush_timeout_ms(false),
+                framer.idle_flush_timeout_ms(false, 0),
                 crate::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
             );
         }
         assert_eq!(
-            escape.idle_flush_timeout_ms(true),
-            crate::raw_input::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS
+            escape.idle_flush_timeout_ms(true, crate::config::DEFAULT_ESCAPE_TIME_MS),
+            i32::from(crate::config::DEFAULT_ESCAPE_TIME_MS)
         );
+        assert_eq!(escape.idle_flush_timeout_ms(true, 0), 0);
         assert_eq!(
-            csi.idle_flush_timeout_ms(true),
+            csi.idle_flush_timeout_ms(true, 0),
             crate::raw_input::MOUSE_ACTIVE_CSI_INTRODUCER_FLUSH_TIMEOUT_MS
         );
         // Anything further inside a sequence cannot be a key: wait for the rest.
         for framer in [&sgr_mouse, &default_mouse, &unrelated] {
             for mouse_capture in [false, true] {
                 assert_eq!(
-                    framer.idle_flush_timeout_ms(mouse_capture),
+                    framer.idle_flush_timeout_ms(mouse_capture, 0),
                     crate::raw_input::INCOMPLETE_SEQUENCE_FLUSH_TIMEOUT_MS
                 );
             }
         }
+        assert_eq!(
+            escape.held_input_flush_timeout_ms(crate::config::DEFAULT_ESCAPE_TIME_MS),
+            crate::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
+        );
+        assert_eq!(escape.held_input_flush_timeout_ms(0), 0);
 
-        let mouse_timeout_ms =
-            std::hint::black_box(crate::raw_input::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS);
-        assert!(mouse_timeout_ms > 100);
+        // A confirmed host sends Escape as CSI 27u, so a lone ESC there is a
+        // mouse prefix; a zero escape time must not cut its delayed tail.
+        let mut disambiguated = confirmed_disambiguation_framer();
+        assert!(disambiguated.push(b"\x1b").is_empty());
+        assert_eq!(disambiguated.idle_flush_timeout_ms(true, 0), 0);
+        assert!(disambiguated.flush_timeout().is_empty());
+        assert!(
+            disambiguated.held_input_flush_timeout_ms(0)
+                > i32::from(crate::config::DEFAULT_ESCAPE_TIME_MS)
+        );
+        assert_eq!(
+            disambiguated.push(b"[<0;5;5M"),
+            vec![b"\x1b[<0;5;5M".to_vec()]
+        );
+
+        let default_escape_time_ms = std::hint::black_box(crate::config::DEFAULT_ESCAPE_TIME_MS);
+        assert!(default_escape_time_ms > 100);
     }
 }
 
